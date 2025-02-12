@@ -858,10 +858,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
     internal partial class {loop.ClassName} : IHeaderDictionary
     {{{(loop.Bytes != null ?
         $@"
-        private static ReadOnlySpan<byte> HeaderBytes => new byte[]
-        {{
-            {Each(loop.Bytes, b => $"{b},")}
-        }};"
+        private static ReadOnlySpan<byte> HeaderBytes => [{Each(loop.Bytes, b => $"{b},")}];"
         : "")}
         private HeaderReferences _headers;
 {Each(loop.Headers.Where(header => header.ExistenceCheck), header => $@"
@@ -1216,7 +1213,7 @@ $@"        private void Clear(long bitsToClear)
         {{
             _bits &= ~{InvalidH2H3ResponseHeadersBits};
         }}
-        internal unsafe void CopyToFast(ref BufferWriter<PipeWriter> output)
+        internal void CopyToFast(ref BufferWriter<PipeWriter> output)
         {{
             var tempBits = (ulong)_bits;
             // Set exact next
@@ -1233,7 +1230,7 @@ $@"        private void Clear(long bitsToClear)
                 return;
             }}
 
-            ref readonly StringValues values = ref Unsafe.AsRef<StringValues>(null);
+            ref readonly StringValues values = ref Unsafe.NullRef<StringValues>();
             do
             {{
                 int keyStart;
@@ -1306,7 +1303,7 @@ $@"        private void Clear(long bitsToClear)
         }}
         {Each(new string[] { "ushort", "uint", "ulong" }, type => $@"
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static unsafe {type} ReadUnalignedLittleEndian_{type}(ref byte source)
+        internal static {type} ReadUnalignedLittleEndian_{type}(ref byte source)
         {{
             {type} result = Unsafe.ReadUnaligned<{type}>(ref source);
             if (!BitConverter.IsLittleEndian)
@@ -1316,11 +1313,11 @@ $@"        private void Clear(long bitsToClear)
             return result;
         }}")}
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-        public unsafe void Append(ReadOnlySpan<byte> name, ReadOnlySpan<byte> value, bool checkForNewlineChars)
+        public void Append(ReadOnlySpan<byte> name, ReadOnlySpan<byte> value, bool checkForNewlineChars)
         {{
             ref byte nameStart = ref MemoryMarshal.GetReference(name);
             var nameStr = string.Empty;
-            ref StringValues values = ref Unsafe.AsRef<StringValues>(null);
+            ref StringValues values = ref Unsafe.NullRef<StringValues>();
             var flag = 0L;
 
             // Does the name match any ""known"" headers
@@ -1342,9 +1339,9 @@ $@"        private void Clear(long bitsToClear)
         }}
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-        public unsafe bool TryHPackAppend(int index, ReadOnlySpan<byte> value, bool checkForNewlineChars)
+        public bool TryHPackAppend(int index, ReadOnlySpan<byte> value, bool checkForNewlineChars)
         {{
-            ref StringValues values = ref Unsafe.AsRef<StringValues>(null);
+            ref StringValues values = ref Unsafe.NullRef<StringValues>();
             var nameStr = string.Empty;
             var flag = 0L;
 
@@ -1363,9 +1360,9 @@ $@"        private void Clear(long bitsToClear)
         }}
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-        public unsafe bool TryQPackAppend(int index, ReadOnlySpan<byte> value, bool checkForNewlineChars)
+        public bool TryQPackAppend(int index, ReadOnlySpan<byte> value, bool checkForNewlineChars)
         {{
-            ref StringValues values = ref Unsafe.AsRef<StringValues>(null);
+            ref StringValues values = ref Unsafe.NullRef<StringValues>();
             var nameStr = string.Empty;
             var flag = 0L;
 
@@ -1431,7 +1428,17 @@ $@"        private void Clear(long bitsToClear)
                     {(!loop.ClassName.Contains("Trailers") ? $@"_next = _collection._contentLength.HasValue ? {loop.Headers.Length - 1} : -1;" : "_next = -1;")}
                     return true;
                 }}
-            }}
+            }}{(loop.ClassName.Contains("Trailers") ? "" : $@"
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private static int GetNext(long bits, bool hasContentLength)
+            {{
+                return bits != 0
+                    ? BitOperations.TrailingZeroCount(bits)
+                    : hasContentLength
+                        ? {loop.Headers.Length - 1}
+                        : -1;
+            }}")}
         }}
     }}
 ")}}}";

@@ -19,7 +19,6 @@ namespace Microsoft.AspNetCore.Routing.FunctionalTests;
 
 public class MinimalFormTests
 {
-    private static readonly JsonSerializerOptions SerializerOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 
     [Fact]
     public async Task MapPost_WithForm_ValidToken_Works()
@@ -65,7 +64,7 @@ public class MinimalFormTests
         var response = await client.SendAsync(request);
         response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadAsStringAsync();
-        var result = JsonSerializer.Deserialize<Todo>(body, SerializerOptions);
+        var result = JsonSerializer.Deserialize<Todo>(body, JsonSerializerOptions.Web);
         Assert.Equal("Test task", result.Name);
         Assert.False(result.IsCompleted);
         Assert.Equal(DateTime.Today.AddDays(1), result.DueDate);
@@ -125,7 +124,7 @@ public class MinimalFormTests
         var response = await client.SendAsync(request);
         response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadAsStringAsync();
-        var result = JsonSerializer.Deserialize<Todo>(body, SerializerOptions);
+        var result = JsonSerializer.Deserialize<Todo>(body, JsonSerializerOptions.Web);
         Assert.Equal("Test task", result.Name);
         Assert.False(result.IsCompleted);
         Assert.Equal(DateTime.Today.AddDays(1), result.DueDate);
@@ -286,7 +285,54 @@ public class MinimalFormTests
         var response = await client.SendAsync(request);
         response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadAsStringAsync();
-        var result = JsonSerializer.Deserialize<Todo>(body, SerializerOptions);
+        var result = JsonSerializer.Deserialize<Todo>(body, JsonSerializerOptions.Web);
+        Assert.Equal("Test task", result.Name);
+        Assert.False(result.IsCompleted);
+        Assert.Equal(DateTime.Today.AddDays(1), result.DueDate);
+    }
+
+    [Fact]
+    public async Task MapPost_WithForm_WithoutAntiforgery_AndRouteGroup_WithoutMiddleware_Works()
+    {
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                    .Configure(app =>
+                    {
+                        app.UseRouting();
+                        app.UseEndpoints(b =>
+                        {
+                            var group = b.MapGroup("/todo").DisableAntiforgery();
+                            group.MapPost("", ([FromForm] Todo todo) => todo);
+                        });
+                    })
+                    .UseTestServer();
+            })
+            .ConfigureServices(services =>
+            {
+                services.AddRouting();
+                services.AddAntiforgery();
+            })
+            .Build();
+
+        using var server = host.GetTestServer();
+        await host.StartAsync();
+        var client = server.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "todo");
+        var nameValueCollection = new List<KeyValuePair<string, string>>
+        {
+            new KeyValuePair<string,string>("name", "Test task"),
+            new KeyValuePair<string,string>("isComplete", "false"),
+            new KeyValuePair<string,string>("dueDate", DateTime.Today.AddDays(1).ToString(CultureInfo.InvariantCulture)),
+        };
+        request.Content = new FormUrlEncodedContent(nameValueCollection);
+
+        var response = await client.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadAsStringAsync();
+        var result = JsonSerializer.Deserialize<Todo>(body, JsonSerializerOptions.Web);
         Assert.Equal("Test task", result.Name);
         Assert.False(result.IsCompleted);
         Assert.Equal(DateTime.Today.AddDays(1), result.DueDate);
@@ -446,7 +492,7 @@ public class MinimalFormTests
             var response = await client.SendAsync(request);
             response.EnsureSuccessStatusCode();
             var body = await response.Content.ReadAsStringAsync();
-            var result = JsonSerializer.Deserialize<Todo>(body, SerializerOptions);
+            var result = JsonSerializer.Deserialize<Todo>(body, JsonSerializerOptions.Web);
             Assert.Equal("Test task", result.Name);
             Assert.False(result.IsCompleted);
             Assert.Equal(DateTime.Today.AddDays(1), result.DueDate);
@@ -650,6 +696,63 @@ public class MinimalFormTests
 
         var response = await client.SendAsync(request);
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task MapPost_WithFormFile_MissingBody_ReturnsBadRequest()
+    {
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                    .Configure(app =>
+                    {
+                        app.UseRouting();
+                        app.UseEndpoints(b => b.MapPost("/", (IFormFile formFile) => "ok").DisableAntiforgery());
+                    })
+                    .UseTestServer();
+            })
+            .ConfigureServices(services => services.AddRouting())
+            .Build();
+
+        using var server = host.GetTestServer();
+
+        await host.StartAsync();
+        var client = server.CreateClient();
+
+        var response = await client.PostAsync("/", null);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task MapPost_WithFormFile_MissingContentType_ReturnsUnsupportedMediaType()
+    {
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                    .Configure(app =>
+                    {
+                        app.UseRouting();
+                        app.UseEndpoints(b => b.MapPost("/", (IFormFile formFile) => "ok").DisableAntiforgery());
+                    })
+                    .UseTestServer();
+            })
+            .ConfigureServices(services => services.AddRouting())
+            .Build();
+
+        using var server = host.GetTestServer();
+
+        await host.StartAsync();
+        var client = server.CreateClient();
+
+        var response = await client.SendAsync(new HttpRequestMessage(HttpMethod.Post, "/")
+        {
+            Content = new ByteArrayContent([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+        });
+
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
     }
 
     class Todo

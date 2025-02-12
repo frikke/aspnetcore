@@ -13,7 +13,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.TestHost;
-using Microsoft.AspNetCore.Testing;
+using Microsoft.AspNetCore.InternalTesting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.Metrics;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
@@ -300,6 +300,41 @@ public class DeveloperExceptionPageMiddlewareTest : LoggedTest
     }
 
     [Fact]
+    public async Task ErrorPageShowsEndpointMetadata()
+    {
+        // Arrange
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                .UseTestServer()
+                .Configure(app =>
+                {
+                    app.UseDeveloperExceptionPage();
+                    app.Run(httpContext =>
+                    {
+                        var endpoint = new Endpoint(null, new EndpointMetadataCollection("my metadata"), null);
+                        httpContext.SetEndpoint(endpoint);
+                        throw new Exception("Test exception");
+                    });
+                });
+            }).Build();
+
+        await host.StartAsync();
+
+        var server = host.GetTestServer();
+
+        // Act
+        var client = server.CreateClient();
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("text/html"));
+        var response = await client.GetAsync("/path");
+
+        // Assert
+        var responseText = await response.Content.ReadAsStringAsync();
+        Assert.Contains("my metadata", responseText);
+    }
+
+    [Fact]
     public async Task StatusCodeFromBadHttpRequestExceptionIsPreserved()
     {
         const int statusCode = 418;
@@ -442,7 +477,7 @@ public class DeveloperExceptionPageMiddlewareTest : LoggedTest
         Assert.Equal("An error occurred", await response.Content.ReadAsStringAsync());
     }
 
-    public static TheoryData CompilationExceptionData
+    public static TheoryData<List<CompilationFailure>> CompilationExceptionData
     {
         get
         {
@@ -580,7 +615,7 @@ public class DeveloperExceptionPageMiddlewareTest : LoggedTest
             {
                 Assert.True(m.Value > 0);
                 Assert.Equal(500, (int)m.Tags["http.response.status_code"]);
-                Assert.Equal("System.Exception", (string)m.Tags["exception.type"]);
+                Assert.Equal("System.Exception", (string)m.Tags["error.type"]);
             });
         Assert.Collection(requestExceptionCollector.GetMeasurementSnapshot(),
             m => AssertRequestException(m, "System.Exception", "unhandled"));
@@ -589,7 +624,7 @@ public class DeveloperExceptionPageMiddlewareTest : LoggedTest
     private static void AssertRequestException(CollectedMeasurement<long> measurement, string exceptionName, string result, string handler = null)
     {
         Assert.Equal(1, measurement.Value);
-        Assert.Equal(exceptionName, (string)measurement.Tags["exception.type"]);
+        Assert.Equal(exceptionName, (string)measurement.Tags["error.type"]);
         Assert.Equal(result, measurement.Tags["aspnetcore.diagnostics.exception.result"].ToString());
         if (handler == null)
         {
