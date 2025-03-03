@@ -274,12 +274,14 @@ public static class IdentityApiEndpointRouteBuilderExtensions
                     return CreateValidationProblem("CannotResetSharedKeyAndEnable",
                         "Resetting the 2fa shared key must disable 2fa until a 2fa token based on the new shared key is validated.");
                 }
-                else if (string.IsNullOrEmpty(tfaRequest.TwoFactorCode))
+
+                if (string.IsNullOrEmpty(tfaRequest.TwoFactorCode))
                 {
                     return CreateValidationProblem("RequiresTwoFactor",
                         "No 2fa token was provided by the request. A valid 2fa token is required to enable 2fa.");
                 }
-                else if (!await userManager.VerifyTwoFactorTokenAsync(user, userManager.Options.Tokens.AuthenticatorTokenProvider, tfaRequest.TwoFactorCode))
+
+                if (!await userManager.VerifyTwoFactorTokenAsync(user, userManager.Options.Tokens.AuthenticatorTokenProvider, tfaRequest.TwoFactorCode))
                 {
                     return CreateValidationProblem("InvalidTwoFactorCode",
                         "The 2fa token provided by the request was invalid. A valid 2fa token is required to enable 2fa.");
@@ -340,7 +342,7 @@ public static class IdentityApiEndpointRouteBuilderExtensions
                 return TypedResults.NotFound();
             }
 
-            return TypedResults.Ok(await CreateInfoResponseAsync(user, claimsPrincipal, userManager));
+            return TypedResults.Ok(await CreateInfoResponseAsync(user, userManager));
         });
 
         accountGroup.MapPost("/info", async Task<Results<Ok<InfoResponse>, ValidationProblem, NotFound>>
@@ -382,7 +384,7 @@ public static class IdentityApiEndpointRouteBuilderExtensions
                 }
             }
 
-            return TypedResults.Ok(await CreateInfoResponseAsync(user, claimsPrincipal, userManager));
+            return TypedResults.Ok(await CreateInfoResponseAsync(user, userManager));
         });
 
         async Task SendConfirmationEmailAsync(TUser user, UserManager<TUser> userManager, HttpContext context, string email, bool isChange = false)
@@ -452,14 +454,13 @@ public static class IdentityApiEndpointRouteBuilderExtensions
         return TypedResults.ValidationProblem(errorDictionary);
     }
 
-    private static async Task<InfoResponse> CreateInfoResponseAsync<TUser>(TUser user, ClaimsPrincipal claimsPrincipal, UserManager<TUser> userManager)
+    private static async Task<InfoResponse> CreateInfoResponseAsync<TUser>(TUser user, UserManager<TUser> userManager)
         where TUser : class
     {
         return new()
         {
             Email = await userManager.GetEmailAsync(user) ?? throw new NotSupportedException("Users must have an email."),
             IsEmailConfirmed = await userManager.IsEmailConfirmedAsync(user),
-            Claims = claimsPrincipal.Claims.ToDictionary(c => c.Type, c => c.Value),
         };
     }
 
