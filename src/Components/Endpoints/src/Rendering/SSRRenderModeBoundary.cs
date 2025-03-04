@@ -5,8 +5,6 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
-using System.Security.Cryptography;
-using System.Text;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Components.Rendering;
 using Microsoft.AspNetCore.Components.Web;
@@ -29,7 +27,7 @@ internal class SSRRenderModeBoundary : IComponent
     private readonly bool _prerender;
     private RenderHandle _renderHandle;
     private IReadOnlyDictionary<string, object?>? _latestParameters;
-    private string? _markerKey;
+    private ComponentMarkerKey? _markerKey;
 
     public IComponentRenderMode RenderMode { get; }
 
@@ -154,11 +152,11 @@ internal class SSRRenderModeBoundary : IComponent
         builder.CloseComponent();
     }
 
-    public ComponentMarker ToMarker(HttpContext httpContext, int sequence, object? key)
+    public ComponentMarker ToMarker(HttpContext httpContext, int sequence, object? componentKey)
     {
         // We expect that the '@key' and sequence number shouldn't change for a given component instance,
         // so we lazily compute the marker key once.
-        _markerKey ??= GenerateMarkerKey(sequence, key);
+        _markerKey ??= GenerateMarkerKey(sequence, componentKey);
 
         var parameters = _latestParameters is null
             ? ParameterView.Empty
@@ -190,29 +188,18 @@ internal class SSRRenderModeBoundary : IComponent
         return marker;
     }
 
-    private string GenerateMarkerKey(int sequence, object? key)
+    private ComponentMarkerKey GenerateMarkerKey(int sequence, object? componentKey)
     {
-        var componentTypeNameHash = _componentTypeNameHashCache.GetOrAdd(_componentType, ComputeComponentTypeNameHash);
-        return $"{componentTypeNameHash}:{sequence}:{(key as IFormattable)?.ToString(null, CultureInfo.InvariantCulture)}";
-    }
+        var componentTypeNameHash = _componentTypeNameHashCache.GetOrAdd(_componentType, TypeNameHash.Compute);
+        var sequenceString = sequence.ToString(CultureInfo.InvariantCulture);
 
-    private static string ComputeComponentTypeNameHash(Type componentType)
-    {
-        if (componentType.FullName is not { } typeName)
+        var locationHash = $"{componentTypeNameHash}:{sequenceString}";
+        var formattedComponentKey = (componentKey as IFormattable)?.ToString(null, CultureInfo.InvariantCulture) ?? string.Empty;
+
+        return new()
         {
-            throw new InvalidOperationException($"An invalid component type was used in {nameof(SSRRenderModeBoundary)}.");
-        }
-
-        var typeNameLength = typeName.Length;
-        var typeNameBytes = typeNameLength < 1024
-            ? stackalloc byte[typeNameLength]
-            : new byte[typeNameLength];
-
-        Encoding.UTF8.GetBytes(typeName, typeNameBytes);
-
-        Span<byte> typeNameHashBytes = stackalloc byte[SHA1.HashSizeInBytes];
-        SHA1.HashData(typeNameBytes, typeNameHashBytes);
-
-        return Convert.ToHexString(typeNameHashBytes);
+            LocationHash = locationHash,
+            FormattedComponentKey = formattedComponentKey,
+        };
     }
 }

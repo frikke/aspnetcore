@@ -1,5 +1,5 @@
 {
-  "$schema": "http://json.schemastore.org/dotnetcli.host",
+  "$schema": "https://json.schemastore.org/dotnetcli.host",
   "symbolInfo": {
     "skipRestore": {
       "longName": "no-restore",
@@ -20,6 +20,9 @@
     },
     "IncludeSampleContent": {
       "isHidden": true
+    },
+    "UseLocalDB": {
+      "longName": "use-local-db"
     },
     "Framework": {
       "longName": "framework"
@@ -51,5 +54,8 @@
       "longName": "use-program-main",
       "shortName": ""
     }
-  }
+  },
+  "usageExamples": [
+    "-int auto --auth individual --use-local-db"
+  ]
 }

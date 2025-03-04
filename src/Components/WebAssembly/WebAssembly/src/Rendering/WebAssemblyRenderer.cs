@@ -2,7 +2,6 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Diagnostics.CodeAnalysis;
-using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices.JavaScript;
 using Microsoft.AspNetCore.Components.RenderTree;
@@ -10,8 +9,8 @@ using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Components.Web.Infrastructure;
 using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
 using Microsoft.AspNetCore.Components.WebAssembly.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.JSInterop;
 using static Microsoft.AspNetCore.Internal.LinkerFlags;
 
 namespace Microsoft.AspNetCore.Components.WebAssembly.Rendering;
@@ -23,38 +22,72 @@ namespace Microsoft.AspNetCore.Components.WebAssembly.Rendering;
 internal sealed partial class WebAssemblyRenderer : WebRenderer
 {
     private readonly ILogger _logger;
+    private readonly Dispatcher _dispatcher;
+    private readonly ResourceAssetCollection _resourceCollection;
+    private readonly IInternalJSImportMethods _jsMethods;
+    private static readonly RendererInfo _componentPlatform = new("WebAssembly", isInteractive: true);
 
-    public WebAssemblyRenderer(IServiceProvider serviceProvider, ILoggerFactory loggerFactory, JSComponentInterop jsComponentInterop)
+    public WebAssemblyRenderer(IServiceProvider serviceProvider, ResourceAssetCollection resourceCollection, ILoggerFactory loggerFactory, JSComponentInterop jsComponentInterop)
         : base(serviceProvider, loggerFactory, DefaultWebAssemblyJSRuntime.Instance.ReadJsonSerializerOptions(), jsComponentInterop)
     {
         _logger = loggerFactory.CreateLogger<WebAssemblyRenderer>();
+        _jsMethods = serviceProvider.GetRequiredService<IInternalJSImportMethods>();
+
+        // if SynchronizationContext.Current is null, it means we are on the single-threaded runtime
+        _dispatcher = WebAssemblyDispatcher._mainSynchronizationContext == null
+            ? NullDispatcher.Instance
+            : new WebAssemblyDispatcher();
+
+        _resourceCollection = resourceCollection;
 
         ElementReferenceContext = DefaultWebAssemblyJSRuntime.Instance.ElementReferenceContext;
         DefaultWebAssemblyJSRuntime.Instance.OnUpdateRootComponents += OnUpdateRootComponents;
     }
 
-    [UnconditionalSuppressMessage("Trimming", "IL2067", Justification = "These are root components which belong to the user and are in assemblies that don't get trimmed.")]
-    private void OnUpdateRootComponents(OperationDescriptor[] operations)
+    [UnconditionalSuppressMessage("Trimming", "IL2072", Justification = "These are root components which belong to the user and are in assemblies that don't get trimmed.")]
+    private void OnUpdateRootComponents(RootComponentOperationBatch batch)
     {
-        for (var i = 0; i < operations.Length; i++)
+        var webRootComponentManager = GetOrCreateWebRootComponentManager();
+        for (var i = 0; i < batch.Operations.Length; i++)
         {
-            var (operation, componentType, parameters) = operations[i];
+            var operation = batch.Operations[i];
             switch (operation.Type)
             {
                 case RootComponentOperationType.Add:
-                    _ = AddComponentAsync(componentType!, parameters, operation.SelectorId!.Value.ToString(CultureInfo.InvariantCulture));
+                    _ = webRootComponentManager.AddRootComponentAsync(
+                        operation.SsrComponentId,
+                        operation.Descriptor!.ComponentType,
+                        operation.Marker!.Value.Key!,
+                        operation.Descriptor!.Parameters);
                     break;
                 case RootComponentOperationType.Update:
-                    _ = RenderRootComponentAsync(operation.ComponentId!.Value, parameters);
+                    _ = webRootComponentManager.UpdateRootComponentAsync(
+                        operation.SsrComponentId,
+                        operation.Descriptor!.ComponentType,
+                        operation.Marker?.Key,
+                        operation.Descriptor!.Parameters);
                     break;
                 case RootComponentOperationType.Remove:
-                    RemoveRootComponent(operation.ComponentId!.Value);
+                    webRootComponentManager.RemoveRootComponent(operation.SsrComponentId);
                     break;
             }
         }
+
+        NotifyEndUpdateRootComponents(batch.BatchId);
     }
 
-    public override Dispatcher Dispatcher => NullDispatcher.Instance;
+    protected override IComponentRenderMode? GetComponentRenderMode(IComponent component) => RenderMode.InteractiveWebAssembly;
+
+    public void NotifyEndUpdateRootComponents(long batchId)
+    {
+        _jsMethods.EndUpdateRootComponents(batchId);
+    }
+
+    protected override ResourceAssetCollection Assets => _resourceCollection;
+
+    protected override RendererInfo RendererInfo => _componentPlatform;
+
+    public override Dispatcher Dispatcher => _dispatcher;
 
     public Task AddComponentAsync([DynamicallyAccessedMembers(Component)] Type componentType, ParameterView parameters, string domElementSelector)
     {
@@ -66,11 +99,7 @@ internal sealed partial class WebAssemblyRenderer : WebRenderer
 
     protected override void AttachRootComponentToBrowser(int componentId, string domElementSelector)
     {
-        DefaultWebAssemblyJSRuntime.Instance.InvokeVoid(
-            "Blazor._internal.attachRootComponentToElement",
-            domElementSelector,
-            componentId,
-            RendererId);
+        _jsMethods.AttachRootComponentToElement(domElementSelector, componentId, RendererId);
     }
 
     /// <inheritdoc />
