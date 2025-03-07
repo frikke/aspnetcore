@@ -17,6 +17,7 @@ using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
 using static Microsoft.AspNetCore.Internal.LinkerFlags;
 
@@ -37,8 +38,10 @@ namespace Microsoft.AspNetCore.Components.Endpoints;
 internal partial class EndpointHtmlRenderer : StaticHtmlRenderer, IComponentPrerenderer
 {
     private readonly IServiceProvider _services;
+    private readonly RazorComponentsServiceOptions _options;
     private Task? _servicesInitializedTask;
     private HttpContext _httpContext = default!; // Always set at the start of an inbound call
+    private ResourceAssetCollection? _resourceCollection;
 
     // The underlying Renderer always tracks the pending tasks representing *full* quiescence, i.e.,
     // when everything (regardless of streaming SSR) is fully complete. In this subclass we also track
@@ -50,6 +53,7 @@ internal partial class EndpointHtmlRenderer : StaticHtmlRenderer, IComponentPrer
         : base(serviceProvider, loggerFactory)
     {
         _services = serviceProvider;
+        _options = serviceProvider.GetRequiredService<IOptions<RazorComponentsServiceOptions>>().Value;
     }
 
     internal HttpContext? HttpContext => _httpContext;
@@ -75,11 +79,25 @@ internal partial class EndpointHtmlRenderer : StaticHtmlRenderer, IComponentPrer
         var navigationManager = (IHostEnvironmentNavigationManager)httpContext.RequestServices.GetRequiredService<NavigationManager>();
         navigationManager?.Initialize(GetContextBaseUri(httpContext.Request), GetFullUri(httpContext.Request));
 
-        if (httpContext.RequestServices.GetService<AuthenticationStateProvider>() is IHostEnvironmentAuthenticationStateProvider authenticationStateProvider)
+        var authenticationStateProvider = httpContext.RequestServices.GetService<AuthenticationStateProvider>();
+        if (authenticationStateProvider is IHostEnvironmentAuthenticationStateProvider hostEnvironmentAuthenticationStateProvider)
         {
             var authenticationState = new AuthenticationState(httpContext.User);
-            authenticationStateProvider.SetAuthenticationState(Task.FromResult(authenticationState));
+            hostEnvironmentAuthenticationStateProvider.SetAuthenticationState(Task.FromResult(authenticationState));
         }
+
+        if (authenticationStateProvider != null)
+        {
+            var authStateListeners = httpContext.RequestServices.GetServices<IHostEnvironmentAuthenticationStateProvider>();
+            Task<AuthenticationState>? authStateTask = null;
+            foreach (var authStateListener in authStateListeners)
+            {
+                authStateTask ??= authenticationStateProvider.GetAuthenticationStateAsync();
+                authStateListener.SetAuthenticationState(authStateTask);
+            }
+        }
+
+        InitializeResourceCollection(httpContext);
 
         if (handler != null && form != null)
         {
@@ -102,15 +120,38 @@ internal partial class EndpointHtmlRenderer : StaticHtmlRenderer, IComponentPrer
             // Saving RouteData to avoid routing twice in Router component
             var routingStateProvider = httpContext.RequestServices.GetRequiredService<EndpointRoutingStateProvider>();
             routingStateProvider.RouteData = new RouteData(componentType, httpContext.GetRouteData().Values);
-            if (httpContext.GetEndpoint() is RouteEndpoint endpoint)
+            if (httpContext.GetEndpoint() is RouteEndpoint routeEndpoint)
             {
-                routingStateProvider.RouteData.Template = endpoint.RoutePattern.RawText;
+                routingStateProvider.RouteData.Template = routeEndpoint.RoutePattern.RawText;
             }
+        }
+    }
+
+    private static void InitializeResourceCollection(HttpContext httpContext)
+    {
+
+        var endpoint = httpContext.GetEndpoint();
+        var resourceCollection = GetResourceCollection(httpContext);
+        var resourceCollectionUrl = resourceCollection != null && endpoint != null ?
+            endpoint.Metadata.GetMetadata<ResourceCollectionUrlMetadata>() :
+            null;
+
+        var resourceCollectionProvider = resourceCollectionUrl != null ? httpContext.RequestServices.GetService<ResourceCollectionProvider>() : null;
+        if (resourceCollectionUrl != null && resourceCollectionProvider != null)
+        {
+            resourceCollectionProvider.SetResourceCollectionUrl(resourceCollectionUrl.Url);
+            resourceCollectionProvider.SetResourceCollection(resourceCollection ?? ResourceAssetCollection.Empty);
         }
     }
 
     protected override ComponentState CreateComponentState(int componentId, IComponent component, ComponentState? parentComponentState)
         => new EndpointComponentState(this, componentId, component, parentComponentState);
+
+    /// <inheritdoc/>
+    protected override ResourceAssetCollection Assets =>
+        _resourceCollection ??= GetResourceCollection(_httpContext) ?? base.Assets;
+
+    private static ResourceAssetCollection? GetResourceCollection(HttpContext httpContext) => httpContext.GetEndpoint()?.Metadata.GetMetadata<ResourceAssetCollection>();
 
     protected override void AddPendingTask(ComponentState? componentState, Task task)
     {
@@ -128,7 +169,7 @@ internal partial class EndpointHtmlRenderer : StaticHtmlRenderer, IComponentPrer
     }
 
     // For tests only
-    internal List<Task> NonStreamingPendingTasks => _nonStreamingPendingTasks;
+    internal Task? NonStreamingPendingTasksCompletion;
 
     protected override Task UpdateDisplayAsync(in RenderBatch renderBatch)
     {
@@ -136,6 +177,12 @@ internal partial class EndpointHtmlRenderer : StaticHtmlRenderer, IComponentPrer
 
         if (_streamingUpdatesWriter is { } writer)
         {
+            // Important: SendBatchAsStreamingUpdate *must* be invoked synchronously
+            // before any 'await' in this method. That's enforced by the compiler
+            // (the method has an 'in' parameter) but even if it wasn't, it would still
+            // be important, because the RenderBatch buffers may be overwritten as soon
+            // as we yield the sync context. The only alternative would be to clone the
+            // batch deeply, or serialize it synchronously (e.g., via RenderBatchWriter).
             SendBatchAsStreamingUpdate(renderBatch, writer);
             return FlushThenComplete(writer, base.UpdateDisplayAsync(renderBatch));
         }

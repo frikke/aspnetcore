@@ -1,7 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.AspNetCore.Components.RenderTree;
@@ -19,9 +21,11 @@ internal partial class EndpointHtmlRenderer
     private TextWriter? _streamingUpdatesWriter;
     private HashSet<int>? _visitedComponentIdsInCurrentStreamingBatch;
     private string? _ssrFramingCommentMarkup;
+    private bool _isHandlingErrors;
 
-    public void InitializeStreamingRenderingFraming(HttpContext httpContext)
+    public void InitializeStreamingRenderingFraming(HttpContext httpContext, bool isErrorHandler)
     {
+        _isHandlingErrors = isErrorHandler;
         if (IsProgressivelyEnhancedNavigation(httpContext.Request))
         {
             var id = Guid.NewGuid().ToString();
@@ -34,8 +38,15 @@ internal partial class EndpointHtmlRenderer
         }
     }
 
+    // We do not want the debugger to consider NavigationExceptions caught by this method as user-unhandled.
+    [DebuggerDisableUserUnhandledExceptions]
     public async Task SendStreamingUpdatesAsync(HttpContext httpContext, Task untilTaskCompleted, TextWriter writer)
     {
+        // Important: do not introduce any 'await' statements in this method above the point where we write
+        // the SSR framing markers, otherwise batches may be emitted before the framing makers, and then the
+        // response would be invalid. See the comment below indicating the point where we intentionally yield
+        // the sync context to allow SSR batches to begin being emitted.
+
         SetHttpContext(httpContext);
 
         if (_streamingUpdatesWriter is not null)
@@ -53,8 +64,11 @@ internal partial class EndpointHtmlRenderer
 
         try
         {
-            await writer.WriteAsync(_ssrFramingCommentMarkup);
-            await writer.FlushAsync(); // Make sure the initial HTML was sent
+            writer.Write(_ssrFramingCommentMarkup);
+            EmitInitializersIfNecessary(httpContext, writer);
+
+            // At this point we yield the sync context. SSR batches may then be emitted at any time.
+            await writer.FlushAsync();
             await untilTaskCompleted;
         }
         catch (NavigationException navigationException)
@@ -63,6 +77,10 @@ internal partial class EndpointHtmlRenderer
         }
         catch (Exception ex)
         {
+            // Rethrowing also informs the debugger that this exception should be considered user-unhandled unlike NavigationExceptions,
+            // but calling BreakForUserUnhandledException here allows the debugger to break before we modify the HttpContext.
+            Debugger.BreakForUserUnhandledException(ex);
+
             // Theoretically it might be possible to let the error middleware run, capture the output,
             // then emit it in a special format so the JS code can display the error page. However
             // for now we're not going to support that and will simply emit a message.
@@ -70,6 +88,18 @@ internal partial class EndpointHtmlRenderer
             await writer.FlushAsync(); // Important otherwise the client won't receive the error message, as we're about to fail the pipeline
             await _httpContext.Response.CompleteAsync();
             throw;
+        }
+    }
+
+    internal void EmitInitializersIfNecessary(HttpContext httpContext, TextWriter writer)
+    {
+        if (_options.JavaScriptInitializers != null &&
+            !IsProgressivelyEnhancedNavigation(httpContext.Request))
+        {
+            var initializersBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(_options.JavaScriptInitializers));
+            writer.Write("<!--Blazor-Web-Initializers:");
+            writer.Write(initializersBase64);
+            writer.Write("-->");
         }
     }
 
@@ -127,6 +157,17 @@ internal partial class EndpointHtmlRenderer
                     continue;
                 }
 
+                // Of the components that updated, we want to emit the roots of all the streaming subtrees, and not
+                // any non-streaming ancestors. There's no point emitting non-streaming ancestor content since there
+                // are no markers in the document to receive it. Also we don't want to call WriteComponentHtml for
+                // nonstreaming ancestors, as that would make us skip over their descendants who may in fact be the
+                // roots of streaming subtrees.
+                var componentState = (EndpointComponentState)GetComponentState(componentId);
+                if (!componentState.StreamRendering)
+                {
+                    continue;
+                }
+
                 // This format relies on the component producing well-formed markup (i.e., it can't have a
                 // </template> at the top level without a preceding matching <template>). Alternatively we
                 // could look at using a custom TextWriter that does some extra encoding of all the content
@@ -160,13 +201,19 @@ internal partial class EndpointHtmlRenderer
         return depth;
     }
 
+    internal static bool ShouldShowDetailedErrors(HttpContext httpContext)
+    {
+        var env = httpContext.RequestServices.GetRequiredService<IWebHostEnvironment>();
+        var options = httpContext.RequestServices.GetRequiredService<IOptions<RazorComponentsServiceOptions>>();
+        var showDetailedErrors = env.IsDevelopment() || options.Value.DetailedErrors;
+        return showDetailedErrors;
+    }
+
     private static void HandleExceptionAfterResponseStarted(HttpContext httpContext, TextWriter writer, Exception exception)
     {
         // We already started the response so we have no choice but to return a 200 with HTML and will
         // have to communicate the error information within that
-        var env = httpContext.RequestServices.GetRequiredService<IWebHostEnvironment>();
-        var options = httpContext.RequestServices.GetRequiredService<IOptions<RazorComponentsServiceOptions>>();
-        var showDetailedErrors = env.IsDevelopment() || options.Value.DetailedErrors;
+        var showDetailedErrors = ShouldShowDetailedErrors(httpContext);
         var message = showDetailedErrors
             ? exception.ToString()
             : "There was an unhandled exception on the current request. For more details turn on detailed exceptions by setting 'DetailedErrors: true' in 'appSettings.Development.json'";
@@ -259,7 +306,7 @@ internal partial class EndpointHtmlRenderer
     {
         // For enhanced nav, the Blazor JS code controls the "accept" header precisely, so we can be very specific about the format
         var accept = request.Headers.Accept;
-        return accept.Count == 1 && string.Equals(accept[0]!, "text/html;blazor-enhanced-nav=on", StringComparison.Ordinal);
+        return accept.Count == 1 && string.Equals(accept[0]!, "text/html; blazor-enhanced-nav=on", StringComparison.Ordinal);
     }
 
     private readonly struct ComponentIdAndDepth

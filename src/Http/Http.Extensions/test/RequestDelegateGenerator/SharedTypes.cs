@@ -12,8 +12,6 @@ using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
-using System.Diagnostics.CodeAnalysis;
-using Microsoft.Diagnostics.Runtime.Interop;
 
 namespace Microsoft.AspNetCore.Http.Generators.Tests;
 
@@ -698,6 +696,14 @@ public record ParameterListFromQuery(HttpContext HttpContext,
     [property: FromQuery(Name = "anotherCustomQuery")] int? AnotherCustomValue = null);
 public record ParameterListFromRoute(HttpContext HttpContext, int Value);
 public record ParameterListFromHeader(HttpContext HttpContext, [FromHeader(Name = "X-Custom-Header")] int Value);
+
+public record ParameterListFromHeaderWithProperties
+{
+    public HttpContext HttpContext { get; set; }
+    [FromHeader(Name = "X-Custom-Header")]
+    public int Value { get; set; }
+}
+
 public record ParametersListWithImplicitFromBody(HttpContext HttpContext, TodoStruct Todo);
 public record struct TodoStruct(int Id, string Name, bool IsComplete, TodoStatus Status) : ITodo;
 public record ParametersListWithExplicitFromBody(HttpContext HttpContext, [FromBody] Todo Todo);

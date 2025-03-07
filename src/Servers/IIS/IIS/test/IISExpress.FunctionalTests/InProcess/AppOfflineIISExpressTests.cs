@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Server.IIS.FunctionalTests;
 using Microsoft.AspNetCore.Server.IIS.FunctionalTests.Utilities;
 using Microsoft.AspNetCore.Server.IntegrationTesting;
-using Microsoft.AspNetCore.Testing;
+using Microsoft.AspNetCore.InternalTesting;
 using Xunit;
 
 namespace Microsoft.AspNetCore.Server.IIS.IISExpress.FunctionalTests;
@@ -19,6 +19,7 @@ public class AppOfflineIISExpressTests : IISFunctionalTestBase
     }
 
     [ConditionalFact]
+    [QuarantinedTest("https://github.com/dotnet/aspnetcore/issues/60482")]
     public async Task AppOfflineDroppedWhileSiteStarting_SiteShutsDown_InProcess()
     {
         // This test often hits a race between debug logging and stdout redirection closing the handle
@@ -55,8 +56,8 @@ public class AppOfflineIISExpressTests : IISFunctionalTestBase
                 {
                     // For IISExpress, we need to catch the exception because IISExpress will not restart a process if it crashed.
                     // RemoveAppOffline will fail due to a bad request exception as the server is down.
-                    Assert.Contains(TestSink.Writes, context => context.Message.Contains("Drained all requests, notifying managed."));
                     deploymentResult.AssertWorkerProcessStop();
+                    Assert.Contains(TestSink.Writes, context => context.Message.Contains("Drained all requests, notifying managed."));
                     return;
                 }
             }
